@@ -57,3 +57,7 @@ pathlib2>=2.3.0
 # API client dependencies
 tenacity>=8.0.0
 async-timeout>=4.0.0
+
+# Analysis dependencies
+psutil>=5.8.0
+protobuf>=3.19.0
