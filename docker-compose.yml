@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+      - ./replays:/app/replays
+      - ./analysis_cache:/app/analysis_cache
+      - ./player_data:/app/player_data
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - BALLCHASING_API_KEY=${BALLCHASING_API_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - rl-coach-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - rl-coach-network
+
+volumes:
+  redis_data:
+
+networks:
+  rl-coach-network:
+    driver: bridge
