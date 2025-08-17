@@ -8,7 +8,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      - ./data/replays:/app/data/replays
+      - ./data/cache:/app/data/cache  
+      - ./data/players:/app/data/players
     environment:
       - ENVIRONMENT=production
       - LOG_LEVEL=INFO
