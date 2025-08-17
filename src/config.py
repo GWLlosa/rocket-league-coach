@@ -6,7 +6,6 @@ from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
-from python_decouple import config
 
 
 class Settings(BaseSettings):
