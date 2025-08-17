@@ -22,8 +22,10 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app
+# Create non-root user and app directory
+RUN useradd --create-home --shell /bin/bash app && \
+    mkdir -p /app/data/replays /app/data/cache /app/data/players && \
+    chown -R app:app /app
 
 # Copy requirements first for better Docker layer caching
 COPY requirements.txt .
@@ -36,9 +38,8 @@ RUN pip install --upgrade pip setuptools wheel && \
 # Copy application code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p data/replays data/cache data/players && \
-    chown -R app:app /app
+# Ensure proper ownership of all files
+RUN chown -R app:app /app
 
 # Switch to non-root user
 USER app
