@@ -26,9 +26,18 @@ class Settings(BaseSettings):
         """Initialize settings."""
         super().__init__(**kwargs)
         
-        # Create directories
-        for dir_name in ["data/replays", "data/cache", "data/players"]:
-            Path(dir_name).mkdir(parents=True, exist_ok=True)
+        # Don't try to create directories here - they should exist from Dockerfile
+        # If they don't exist, we'll create them when needed
+        pass
+
+    def ensure_directories(self):
+        """Ensure directories exist - call this when needed."""
+        try:
+            for dir_name in ["data/replays", "data/cache", "data/players"]:
+                Path(dir_name).mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Log warning but don't fail startup
+            print(f"Warning: Could not create directories. Using /tmp as fallback.")
 
 
 # Global settings instance
