@@ -2,16 +2,15 @@
 carball>=0.7.5
 python-ballchasing>=0.4.1
 
+# Scientific computing - add scipy separately as it might be needed
+scipy>=1.5.0
+
 # Web framework and server
 fastapi>=0.68.0
 uvicorn[standard]>=0.15.0
 gunicorn>=20.1.0
 jinja2>=3.0.0
 python-multipart>=0.0.5
-
-# Data processing and statistics - compatible with carball requirements
-# Note: carball requires pandas==1.0.3, so we let it install its requirements
-# pandas and numpy will be installed as carball dependencies
 
 # HTTP client for API calls
 httpx>=0.24.0
