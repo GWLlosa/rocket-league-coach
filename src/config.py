@@ -1,9 +1,11 @@
 """Minimal configuration management for the Rocket League Coach application."""
 
 import os
+import json
 from pathlib import Path
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional, Union
 
 
 class Settings(BaseSettings):
@@ -19,7 +21,8 @@ class Settings(BaseSettings):
     
     # Additional settings that the app expects
     enable_cors: bool = True
-    cors_origins: List[str] = ["*"]
+    # Use a string that will be parsed into a list
+    cors_origins: Union[List[str], str] = Field(default="*")
     
     # Directory settings as strings (will be converted to Path objects)
     logs_dir: str = "logs"
@@ -36,6 +39,30 @@ class Settings(BaseSettings):
         case_sensitive = False
         # Allow extra fields to prevent pydantic errors
         extra = "ignore"
+        # Don't try to parse JSON for environment variables by default
+        env_parse_none_str = "None"
+
+    @field_validator('cors_origins', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v):
+        """Parse CORS origins from environment variable."""
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            # Handle special cases
+            if v in ['', 'None', 'null', None]:
+                return ["*"]
+            if v == "*":
+                return ["*"]
+            # Try to parse as JSON array
+            if v.startswith('['):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    pass
+            # Otherwise split by comma
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        return ["*"]
 
     @property
     def is_development(self) -> bool:
@@ -50,6 +77,9 @@ class Settings(BaseSettings):
     def __init__(self, **kwargs):
         """Initialize settings."""
         super().__init__(**kwargs)
+        # Ensure cors_origins is always a list
+        if isinstance(self.cors_origins, str):
+            self.cors_origins = [self.cors_origins]
         # Convert string paths to Path objects after initialization
         self.logs_dir = Path(self.logs_dir)
         self.replays_dir = Path(self.replays_dir)
@@ -79,7 +109,12 @@ def get_settings() -> Settings:
     """Get settings instance."""
     global _settings
     if _settings is None:
-        _settings = Settings()
+        try:
+            _settings = Settings()
+        except Exception as e:
+            print(f"Warning: Error loading settings: {e}. Using defaults.")
+            # Create settings with defaults, ignoring environment variables
+            _settings = Settings(_env_file=None)
         # Ensure directories exist on first access
         _settings.ensure_directories()
     return _settings
