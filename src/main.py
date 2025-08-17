@@ -7,13 +7,22 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
 from pathlib import Path
+import logging
 
 from .config import get_settings
-from .logging_config import get_logger
 
-
-# Initialize logger
-logger = get_logger(__name__)
+# Try to import the custom logger, but fall back to standard logging if it fails
+try:
+    from .logging_config import get_logger
+    logger = get_logger(__name__)
+except Exception as e:
+    # Fallback to standard logging if custom logging fails
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)8s] %(name)s: %(message)s"
+    )
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Failed to initialize custom logging, using fallback: {e}")
 
 
 @asynccontextmanager
@@ -23,16 +32,18 @@ async def lifespan(app: FastAPI):
     
     # Startup
     logger.info(
-        "Starting Rocket League Coach",
-        environment=settings.environment,
-        debug=settings.debug,
-        version="1.0.0"
+        f"Starting Rocket League Coach - Environment: {settings.environment}, Debug: {settings.debug}, Version: 1.0.0"
     )
     
     # Ensure directories exist
-    settings.replays_dir.mkdir(parents=True, exist_ok=True)
-    settings.analysis_cache_dir.mkdir(parents=True, exist_ok=True)
-    settings.player_data_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        settings.replays_dir.mkdir(parents=True, exist_ok=True)
+        settings.analysis_cache_dir.mkdir(parents=True, exist_ok=True)
+        settings.player_data_dir.mkdir(parents=True, exist_ok=True)
+        settings.logs_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("All directories created successfully")
+    except Exception as e:
+        logger.warning(f"Could not create some directories: {e}")
     
     logger.info("Application startup complete")
     
@@ -71,19 +82,13 @@ def create_app() -> FastAPI:
     async def log_requests(request: Request, call_next):
         """Log all HTTP requests."""
         logger.info(
-            "HTTP request",
-            method=request.method,
-            url=str(request.url),
-            client_ip=request.client.host if request.client else None,
+            f"HTTP request - Method: {request.method}, URL: {str(request.url)}, Client: {request.client.host if request.client else 'Unknown'}"
         )
         
         response = await call_next(request)
         
         logger.info(
-            "HTTP response",
-            method=request.method,
-            url=str(request.url),
-            status_code=response.status_code,
+            f"HTTP response - Method: {request.method}, URL: {str(request.url)}, Status: {response.status_code}"
         )
         
         return response
@@ -93,11 +98,7 @@ def create_app() -> FastAPI:
     async def global_exception_handler(request: Request, exc: Exception):
         """Global exception handler."""
         logger.error(
-            "Unhandled exception",
-            error=str(exc),
-            error_type=type(exc).__name__,
-            url=str(request.url),
-            method=request.method,
+            f"Unhandled exception - Error: {str(exc)}, Type: {type(exc).__name__}, URL: {str(request.url)}, Method: {request.method}"
         )
         
         if settings.debug:
