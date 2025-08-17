@@ -17,9 +17,9 @@ RUN apt-get update && apt-get install -y \
     gfortran \
     libblas-dev \
     liblapack-dev \
-    libatlas-base-dev \
     pkg-config \
     curl \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
