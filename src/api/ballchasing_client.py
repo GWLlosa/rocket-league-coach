@@ -1,460 +1,406 @@
-"""Ballchasing.com API client with rate limiting and error handling."""
+"""Ballchasing API client with rate limiting and async operations."""
 
 import asyncio
-import time
-from pathlib import Path
-from typing import List, Optional, Dict, Any, AsyncIterator
-from urllib.parse import urljoin
 import aiohttp
 import aiofiles
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+from urllib.parse import urlencode
+import time
 
-from ..config import get_settings
-from ..logging_config import get_logger, log_performance
+from tenacity import (
+    retry, 
+    stop_after_attempt, 
+    wait_exponential, 
+    retry_if_exception_type
+)
+
+import ballchasing
 from .exceptions import (
-    BallchasingAPIException,
-    RateLimitExceededException,
-    UnauthorizedException,
-    ReplayNotFoundException,
-    PlayerNotFoundException,
-    InvalidResponseException,
-    NetworkException,
-    DownloadException,
+    BallchasingAPIError, 
+    RateLimitError, 
+    ReplayNotFoundError, 
+    AuthenticationError
 )
-from .models import (
-    ReplaySearchResponse,
-    GameInfo,
-    GameResult,
-    DownloadInfo,
-    BallchasingError,
-)
+from .models import ReplaySearchResult, ReplayMetadata
+from ..config import get_settings
+from ..logging_config import get_logger
 
-
-class RateLimiter:
-    """Rate limiter for API calls."""
-    
-    def __init__(self, calls_per_second: float = 2.0, calls_per_hour: int = 500):
-        self.calls_per_second = calls_per_second
-        self.calls_per_hour = calls_per_hour
-        self.last_call_time = 0.0
-        self.hourly_calls = []
-        self._lock = asyncio.Lock()
-    
-    async def acquire(self):
-        """Acquire permission to make an API call."""
-        async with self._lock:
-            now = time.time()
-            
-            # Remove calls older than 1 hour
-            self.hourly_calls = [call_time for call_time in self.hourly_calls if now - call_time < 3600]
-            
-            # Check hourly limit
-            if len(self.hourly_calls) >= self.calls_per_hour:
-                oldest_call = min(self.hourly_calls)
-                sleep_time = 3600 - (now - oldest_call)
-                raise RateLimitExceededException(
-                    f"Hourly rate limit exceeded. Try again in {sleep_time:.0f} seconds.",
-                    retry_after=int(sleep_time)
-                )
-            
-            # Check per-second limit
-            time_since_last_call = now - self.last_call_time
-            min_interval = 1.0 / self.calls_per_second
-            
-            if time_since_last_call < min_interval:
-                sleep_time = min_interval - time_since_last_call
-                await asyncio.sleep(sleep_time)
-                now = time.time()
-            
-            # Record the call
-            self.last_call_time = now
-            self.hourly_calls.append(now)
+logger = get_logger(__name__)
 
 
 class BallchasingClient:
-    """Async client for Ballchasing.com API."""
+    """Async client for Ballchasing.com API with rate limiting and caching."""
     
-    def __init__(self, api_key: str = None, base_url: str = None):
+    def __init__(self, api_token: Optional[str] = None):
+        """Initialize the Ballchasing client.
+        
+        Args:
+            api_token: Optional API token. If None, uses config setting.
+        """
         self.settings = get_settings()
-        self.logger = get_logger(__name__)
+        self.api_token = api_token or self.settings.ballchasing_api_token
         
-        self.api_key = api_key or self.settings.ballchasing_api_key
-        self.base_url = base_url or self.settings.ballchasing_base_url
+        if not self.api_token:
+            raise AuthenticationError("Ballchasing API token is required")
         
-        # Initialize rate limiter
-        self.rate_limiter = RateLimiter(
-            calls_per_second=self.settings.ballchasing_rate_limit_per_second,
-            calls_per_hour=self.settings.ballchasing_rate_limit_per_hour
-        )
+        # Initialize the ballchasing API client
+        self.api = ballchasing.Api(self.api_token)
         
-        # Session will be created when needed
+        # Rate limiting configuration
+        self.rate_limit_per_second = 2.0  # 2 requests per second
+        self.rate_limit_per_hour = 500    # 500 requests per hour
+        self.last_request_time = 0.0
+        self.hourly_request_count = 0
+        self.hourly_window_start = time.time()
+        
+        # Session for async requests
         self._session: Optional[aiohttp.ClientSession] = None
+        
+        logger.info("Ballchasing client initialized")
     
     async def __aenter__(self):
         """Async context manager entry."""
-        await self._ensure_session()
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            headers={'Authorization': self.api_token}
+        )
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        await self.close()
-    
-    async def _ensure_session(self):
-        """Ensure aiohttp session is created."""
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=self.settings.request_timeout_seconds)
-            headers = {
-                "Authorization": self.api_key,
-                "User-Agent": "RocketLeagueCoach/1.0.0"
-            }
-            self._session = aiohttp.ClientSession(
-                timeout=timeout,
-                headers=headers,
-                raise_for_status=False
-            )
-    
-    async def close(self):
-        """Close the aiohttp session."""
-        if self._session and not self._session.closed:
+        if self._session:
             await self._session.close()
+    
+    def _check_rate_limits(self) -> None:
+        """Check and enforce rate limits."""
+        current_time = time.time()
+        
+        # Reset hourly counter if needed
+        if current_time - self.hourly_window_start >= 3600:
+            self.hourly_request_count = 0
+            self.hourly_window_start = current_time
+        
+        # Check hourly limit
+        if self.hourly_request_count >= self.rate_limit_per_hour:
+            raise RateLimitError("Hourly rate limit exceeded")
+        
+        # Check per-second limit
+        time_since_last_request = current_time - self.last_request_time
+        min_interval = 1.0 / self.rate_limit_per_second
+        
+        if time_since_last_request < min_interval:
+            sleep_time = min_interval - time_since_last_request
+            logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
+            time.sleep(sleep_time)
+        
+        self.last_request_time = time.time()
+        self.hourly_request_count += 1
     
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((aiohttp.ClientError, NetworkException))
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
     )
-    async def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make an authenticated request to the Ballchasing API."""
-        await self._ensure_session()
-        await self.rate_limiter.acquire()
-        
-        url = urljoin(self.base_url, endpoint)
-        
-        self.logger.debug(
-            "Making API request",
-            method=method,
-            url=url,
-            params=kwargs.get('params')
-        )
-        
-        try:
-            async with self._session.request(method, url, **kwargs) as response:
-                # Handle rate limiting
-                if response.status == 429:
-                    retry_after = int(response.headers.get('Retry-After', 60))
-                    raise RateLimitExceededException(
-                        "Rate limit exceeded",
-                        retry_after=retry_after
-                    )
-                
-                # Handle authentication errors
-                if response.status == 401:
-                    raise UnauthorizedException("Invalid API key")
-                
-                # Handle not found
-                if response.status == 404:
-                    raise ReplayNotFoundException("Resource not found")
-                
-                # Read response content
-                try:
-                    response_data = await response.json()
-                except aiohttp.ContentTypeError:
-                    response_text = await response.text()
-                    self.logger.error(
-                        "Invalid JSON response",
-                        status=response.status,
-                        response=response_text[:500]
-                    )
-                    raise InvalidResponseException("Invalid JSON response from API")
-                
-                # Handle API errors
-                if not response.ok:
-                    error_msg = response_data.get('error', f"HTTP {response.status}")
-                    raise BallchasingAPIException(
-                        error_msg,
-                        status_code=response.status,
-                        response_data=response_data
-                    )
-                
-                self.logger.debug(
-                    "API request successful",
-                    status=response.status,
-                    response_size=len(str(response_data))
-                )
-                
-                return response_data
-        
-        except aiohttp.ClientError as e:
-            self.logger.error(
-                "Network error during API request",
-                error=str(e),
-                url=url
-            )
-            raise NetworkException(f"Network error: {e}", e)
-    
     async def search_player_replays(
-        self,
-        player_name: str,
+        self, 
+        player_name: str, 
         count: int = 10,
-        ranked_only: bool = True,
-        sort_by: str = "created",
-        sort_order: str = "desc"
-    ) -> List[GameInfo]:
-        """Search for replays by player name."""
-        self.logger.info(
+        playlist: Optional[str] = None,
+        season: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Search for replays by player name.
+        
+        Args:
+            player_name: Player's gamertag/name
+            count: Number of replays to fetch (max 200 per request)
+            playlist: Optional playlist filter
+            season: Optional season filter
+            
+        Returns:
+            List of replay metadata dictionaries
+            
+        Raises:
+            BallchasingAPIError: If API request fails
+            RateLimitError: If rate limit is exceeded
+        """
+        logger.info(
             "Searching for player replays",
             player=player_name,
             count=count,
-            ranked_only=ranked_only
+            playlist=playlist,
+            season=season
         )
-        
-        params = {
-            "player-name": player_name,
-            "count": min(count, 200),  # API limit
-            "sort-by": sort_by,
-            "sort-dir": sort_order,
-        }
-        
-        if ranked_only:
-            params["playlist"] = "ranked-duels,ranked-doubles,ranked-standard,ranked-hoops,ranked-rumble,ranked-dropshot,ranked-snowday"
-        
-        with log_performance(f"search_replays_for_{player_name}"):
-            response_data = await self._make_request("GET", "/replays", params=params)
         
         try:
-            search_response = ReplaySearchResponse(**response_data)
-        except Exception as e:
-            self.logger.error(
-                "Failed to parse search response",
-                error=str(e),
-                response_data=response_data
-            )
-            raise InvalidResponseException(f"Failed to parse search response: {e}")
-        
-        if not search_response.list:
-            raise PlayerNotFoundException(player_name)
-        
-        self.logger.info(
-            "Found replays for player",
-            player=player_name,
-            count=len(search_response.list),
-            total_available=search_response.count
-        )
-        
-        return search_response.list
-    
-    async def download_replay(self, replay_id: str, destination: Path) -> DownloadInfo:
-        """Download a replay file to the specified destination."""
-        await self._ensure_session()
-        
-        self.logger.debug(
-            "Downloading replay",
-            replay_id=replay_id,
-            destination=str(destination)
-        )
-        
-        download_url = f"/replays/{replay_id}/file"
-        
-        # Ensure destination directory exists
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        
-        start_time = time.time()
-        
-        try:
-            await self.rate_limiter.acquire()
+            self._check_rate_limits()
             
-            async with self._session.get(urljoin(self.base_url, download_url)) as response:
+            # Use the ballchasing library to search for replays
+            # The library handles pagination automatically
+            replays = []
+            collected = 0
+            
+            # Build search parameters
+            search_params = {
+                'player-name': player_name,
+                'count': min(count, 200)  # API limit per request
+            }
+            
+            if playlist:
+                search_params['playlist'] = playlist
+            if season:
+                search_params['season'] = season
+            
+            # Get replays using the library
+            replay_results = self.api.get_replays(**search_params)
+            
+            # Convert to list and limit results
+            for replay in replay_results:
+                if collected >= count:
+                    break
+                
+                # Convert typed object to dict if needed
+                if hasattr(replay, '__dict__'):
+                    replay_dict = replay.__dict__
+                else:
+                    replay_dict = replay
+                
+                replays.append(replay_dict)
+                collected += 1
+            
+            logger.info(
+                "Successfully fetched replays",
+                player=player_name,
+                found=len(replays),
+                requested=count
+            )
+            
+            return replays
+            
+        except Exception as e:
+            logger.error(
+                "Failed to search player replays",
+                player=player_name,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            
+            if "rate limit" in str(e).lower():
+                raise RateLimitError(f"Rate limit exceeded: {str(e)}") from e
+            elif "not found" in str(e).lower():
+                return []  # No replays found is not an error
+            else:
+                raise BallchasingAPIError(f"Failed to search replays: {str(e)}") from e
+    
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
+    )
+    async def download_replay(self, replay_id: str) -> bytes:
+        """Download a replay file by ID.
+        
+        Args:
+            replay_id: Unique replay identifier
+            
+        Returns:
+            Binary replay file content
+            
+        Raises:
+            ReplayNotFoundError: If replay doesn't exist
+            BallchasingAPIError: If download fails
+        """
+        logger.debug("Downloading replay", replay_id=replay_id)
+        
+        try:
+            self._check_rate_limits()
+            
+            # Use the ballchasing library to download
+            # We need to use the direct HTTP client since the library
+            # doesn't have an async download method
+            if not self._session:
+                self._session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    headers={'Authorization': self.api_token}
+                )
+            
+            url = f"https://ballchasing.com/api/replays/{replay_id}/file"
+            
+            async with self._session.get(url) as response:
                 if response.status == 404:
-                    raise ReplayNotFoundException(replay_id)
-                
-                if response.status == 401:
-                    raise UnauthorizedException("Invalid API key for download")
-                
-                if not response.ok:
-                    raise DownloadException(
-                        replay_id,
-                        f"HTTP {response.status}: {await response.text()}"
+                    raise ReplayNotFoundError(f"Replay not found: {replay_id}")
+                elif response.status == 429:
+                    raise RateLimitError("Rate limit exceeded")
+                elif response.status != 200:
+                    raise BallchasingAPIError(
+                        f"Failed to download replay {replay_id}: HTTP {response.status}"
                     )
                 
-                # Get file size from headers
-                file_size = int(response.headers.get('Content-Length', 0))
+                content = await response.read()
                 
-                # Download file
-                async with aiofiles.open(destination, 'wb') as file:
-                    async for chunk in response.content.iter_chunked(8192):
-                        await file.write(chunk)
-                
-                download_time = time.time() - start_time
-                actual_size = destination.stat().st_size
-                
-                download_info = DownloadInfo(
+                logger.debug(
+                    "Successfully downloaded replay",
                     replay_id=replay_id,
-                    file_path=str(destination),
-                    file_size=actual_size,
-                    download_time=download_time
+                    size=len(content)
                 )
                 
-                self.logger.info(
-                    "Replay downloaded successfully",
-                    replay_id=replay_id,
-                    file_size=actual_size,
-                    download_time=download_time
-                )
+                return content
                 
-                return download_info
-        
+        except (ReplayNotFoundError, RateLimitError):
+            # Re-raise these as-is
+            raise
         except Exception as e:
-            if destination.exists():
-                destination.unlink()  # Clean up partial download
-            
-            if isinstance(e, (ReplayNotFoundException, UnauthorizedException, DownloadException)):
-                raise
-            
-            self.logger.error(
+            logger.error(
                 "Failed to download replay",
+                replay_id=replay_id,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise BallchasingAPIError(f"Failed to download replay {replay_id}: {str(e)}") from e
+    
+    def extract_game_result(self, replay_metadata: Dict[str, Any], player_name: str) -> str:
+        """Extract game result (win/loss) for a specific player.
+        
+        Args:
+            replay_metadata: Replay metadata from API
+            player_name: Player's name to check result for
+            
+        Returns:
+            'win' or 'loss'
+            
+        Raises:
+            ValueError: If player not found in replay
+        """
+        try:
+            # Look for the player in both teams
+            blue_team = replay_metadata.get('blue', {})
+            orange_team = replay_metadata.get('orange', {})
+            
+            player_team = None
+            
+            # Check blue team
+            if 'players' in blue_team:
+                for player in blue_team['players']:
+                    if player.get('name', '').lower() == player_name.lower():
+                        player_team = 'blue'
+                        break
+            
+            # Check orange team if not found in blue
+            if player_team is None and 'players' in orange_team:
+                for player in orange_team['players']:
+                    if player.get('name', '').lower() == player_name.lower():
+                        player_team = 'orange'
+                        break
+            
+            if player_team is None:
+                raise ValueError(f"Player {player_name} not found in replay")
+            
+            # Determine winner
+            blue_goals = blue_team.get('goals', 0)
+            orange_goals = orange_team.get('goals', 0)
+            
+            if blue_goals > orange_goals:
+                winner = 'blue'
+            elif orange_goals > blue_goals:
+                winner = 'orange'
+            else:
+                # Tie - this shouldn't happen in normal ranked games
+                logger.warning("Game ended in tie", replay_id=replay_metadata.get('id'))
+                return 'loss'  # Default to loss for ties
+            
+            result = 'win' if player_team == winner else 'loss'
+            
+            logger.debug(
+                "Extracted game result",
+                player=player_name,
+                result=result,
+                player_team=player_team,
+                winner=winner,
+                score=f"{blue_goals}-{orange_goals}"
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(
+                "Failed to extract game result",
+                player=player_name,
+                error=str(e),
+                replay_metadata=replay_metadata
+            )
+            # Default to loss if we can't determine the result
+            return 'loss'
+    
+    async def get_replay_details(self, replay_id: str) -> Dict[str, Any]:
+        """Get detailed replay information.
+        
+        Args:
+            replay_id: Unique replay identifier
+            
+        Returns:
+            Detailed replay metadata
+            
+        Raises:
+            ReplayNotFoundError: If replay doesn't exist
+            BallchasingAPIError: If request fails
+        """
+        logger.debug("Getting replay details", replay_id=replay_id)
+        
+        try:
+            self._check_rate_limits()
+            
+            # Use the ballchasing library
+            replay = self.api.get_replay(replay_id)
+            
+            # Convert to dict if it's a typed object
+            if hasattr(replay, '__dict__'):
+                replay_dict = replay.__dict__
+            else:
+                replay_dict = replay
+            
+            logger.debug("Successfully got replay details", replay_id=replay_id)
+            return replay_dict
+            
+        except Exception as e:
+            logger.error(
+                "Failed to get replay details",
                 replay_id=replay_id,
                 error=str(e)
             )
-            raise DownloadException(replay_id, str(e))
-    
-    def extract_game_result(self, game_info: GameInfo, player_name: str) -> GameResult:
-        """Extract game result information for a specific player."""
-        # This is a placeholder - in a real implementation, we would need
-        # to download and parse the replay to get detailed team information
-        # For now, we'll create a basic result structure
-        
-        # Note: The actual team assignment and scores would come from
-        # parsing the replay file with carball
-        result = GameResult(
-            replay_id=game_info.id,
-            player_name=player_name,
-            team_color="unknown",  # Will be determined by carball
-            team_score=0,  # Will be determined by carball
-            opponent_score=0,  # Will be determined by carball
-            won=False,  # Will be determined by carball
-            duration=game_info.duration,
-            date=game_info.date,
-            playlist=game_info.playlist_name,
-            map_name=game_info.map_name
-        )
-        
-        self.logger.debug(
-            "Extracted basic game result",
-            replay_id=game_info.id,
-            player=player_name
-        )
-        
-        return result
-    
-    async def get_player_game_results(
-        self,
-        player_name: str,
-        num_games: int = 10
-    ) -> List[GameResult]:
-        """Get game results for a player."""
-        self.logger.info(
-            "Getting game results for player",
-            player=player_name,
-            num_games=num_games
-        )
-        
-        # Search for replays
-        replays = await self.search_player_replays(player_name, count=num_games)
-        
-        # Extract game results
-        results = []
-        for replay in replays:
-            try:
-                result = self.extract_game_result(replay, player_name)
-                results.append(result)
-            except Exception as e:
-                self.logger.warning(
-                    "Failed to extract game result",
-                    replay_id=replay.id,
-                    error=str(e)
-                )
-        
-        self.logger.info(
-            "Extracted game results",
-            player=player_name,
-            results_count=len(results),
-            requested=num_games
-        )
-        
-        return results
-    
-    async def download_player_replays(
-        self,
-        player_name: str,
-        num_games: int = 10,
-        download_dir: Path = None
-    ) -> List[DownloadInfo]:
-        """Download replay files for a player's recent games."""
-        if download_dir is None:
-            download_dir = self.settings.replays_dir
-        
-        self.logger.info(
-            "Downloading replays for player",
-            player=player_name,
-            num_games=num_games,
-            download_dir=str(download_dir)
-        )
-        
-        # Search for replays
-        replays = await self.search_player_replays(player_name, count=num_games)
-        
-        # Download replays concurrently (but respecting rate limits)
-        download_tasks = []
-        for replay in replays:
-            filename = f"{replay.id}.replay"
-            destination = download_dir / filename
             
-            # Skip if file already exists and is valid
-            if destination.exists() and destination.stat().st_size > 0:
-                self.logger.debug(
-                    "Replay already exists, skipping download",
-                    replay_id=replay.id,
-                    file=str(destination)
-                )
-                continue
-            
-            task = self.download_replay(replay.id, destination)
-            download_tasks.append(task)
+            if "not found" in str(e).lower():
+                raise ReplayNotFoundError(f"Replay not found: {replay_id}") from e
+            else:
+                raise BallchasingAPIError(f"Failed to get replay details: {str(e)}") from e
+    
+    def get_rate_limit_status(self) -> Dict[str, Any]:
+        """Get current rate limit status.
         
-        # Execute downloads with concurrency limit
-        download_infos = []
-        semaphore = asyncio.Semaphore(self.settings.max_concurrent_downloads)
+        Returns:
+            Dictionary with rate limit information
+        """
+        current_time = time.time()
+        time_since_window_start = current_time - self.hourly_window_start
         
-        async def download_with_semaphore(task):
-            async with semaphore:
-                return await task
-        
-        if download_tasks:
-            results = await asyncio.gather(
-                *[download_with_semaphore(task) for task in download_tasks],
-                return_exceptions=True
-            )
-            
-            for result in results:
-                if isinstance(result, Exception):
-                    self.logger.error(
-                        "Download failed",
-                        error=str(result)
-                    )
-                else:
-                    download_infos.append(result)
-        
-        self.logger.info(
-            "Completed replay downloads",
-            player=player_name,
-            successful=len(download_infos),
-            requested=num_games
-        )
-        
-        return download_infos
+        return {
+            'requests_this_hour': self.hourly_request_count,
+            'hourly_limit': self.rate_limit_per_hour,
+            'requests_remaining': self.rate_limit_per_hour - self.hourly_request_count,
+            'window_reset_in_seconds': 3600 - time_since_window_start,
+            'per_second_limit': self.rate_limit_per_second,
+            'last_request_seconds_ago': current_time - self.last_request_time
+        }
 
 
-# Convenience function for creating client instances
-def create_ballchasing_client() -> BallchasingClient:
-    """Create a configured Ballchasing API client."""
-    return BallchasingClient()
+# Convenience function for creating client
+def create_ballchasing_client(api_token: Optional[str] = None) -> BallchasingClient:
+    """Create a Ballchasing client instance.
+    
+    Args:
+        api_token: Optional API token
+        
+    Returns:
+        Configured BallchasingClient instance
+    """
+    return BallchasingClient(api_token)
