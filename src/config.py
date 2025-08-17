@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        # Allow extra fields to prevent pydantic errors
+        extra = "ignore"
 
     def __init__(self, **kwargs):
         """Initialize settings."""
