@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     
     # Directory Settings
-    replays_dir: Path = Field(default=Path("data/replays"), description="Directory for replay files")
-    analysis_cache_dir: Path = Field(default=Path("data/cache"), description="Directory for analysis cache")
-    player_data_dir: Path = Field(default=Path("data/players"), description="Directory for player data")
+    replays_dir: str = Field(default="data/replays", description="Directory for replay files")
+    analysis_cache_dir: str = Field(default="data/cache", description="Directory for analysis cache")
+    player_data_dir: str = Field(default="data/players", description="Directory for player data")
     
     # Cache Settings
     cache_ttl_hours: int = Field(default=24, description="Cache TTL in hours")
@@ -42,30 +42,22 @@ class Settings(BaseSettings):
     max_games_per_analysis: int = Field(default=50, description="Maximum games per analysis")
     confidence_threshold: float = Field(default=0.05, description="P-value threshold for significance")
     
-    # CORS Settings
+    # CORS Settings - simplified
     enable_cors: bool = Field(default=True, description="Enable CORS")
-    cors_origins: List[str] = Field(default=["*"], description="CORS allowed origins")
     
     class Config:
         """Pydantic config."""
         env_file = ".env"
         case_sensitive = False
-        
-        # Define environment variable names
-        fields = {
-            'ballchasing_api_token': {
-                'env': ['BALLCHASING_API_TOKEN', 'BALLCHASING_API_KEY']
-            }
-        }
     
     def __init__(self, **kwargs):
         """Initialize settings with environment variable loading."""
         super().__init__(**kwargs)
         
-        # Ensure directories exist
-        self.replays_dir.mkdir(parents=True, exist_ok=True)
-        self.analysis_cache_dir.mkdir(parents=True, exist_ok=True)
-        self.player_data_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure directories exist - convert to Path objects
+        Path(self.replays_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.analysis_cache_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.player_data_dir).mkdir(parents=True, exist_ok=True)
     
     @property
     def is_development(self) -> bool:
@@ -113,7 +105,7 @@ def get_ballchasing_token() -> str:
 
 def get_cache_dir() -> Path:
     """Get the cache directory path."""
-    return get_settings().analysis_cache_dir
+    return Path(get_settings().analysis_cache_dir)
 
 
 def is_debug_mode() -> bool:
