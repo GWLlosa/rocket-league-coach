@@ -20,7 +20,16 @@ class Settings(BaseSettings):
     # Additional settings that the app expects
     enable_cors: bool = True
     cors_origins: List[str] = ["*"]
+    
+    # Directory settings as strings (will be converted to Path objects)
     logs_dir: str = "logs"
+    replays_dir: str = "data/replays"
+    analysis_cache_dir: str = "data/cache" 
+    player_data_dir: str = "data/players"
+    
+    # Logging settings
+    log_format: str = "standard"  # "json" or "standard"
+    log_file: str = "app.log"
     
     class Config:
         env_file = ".env"
@@ -28,9 +37,24 @@ class Settings(BaseSettings):
         # Allow extra fields to prevent pydantic errors
         extra = "ignore"
 
+    @property
+    def is_development(self) -> bool:
+        """Check if running in development mode."""
+        return self.environment.lower() in ["development", "dev", "local"]
+    
+    @property
+    def is_production(self) -> bool:
+        """Check if running in production mode."""
+        return self.environment.lower() in ["production", "prod"]
+    
     def __init__(self, **kwargs):
         """Initialize settings."""
         super().__init__(**kwargs)
+        # Convert string paths to Path objects after initialization
+        self.logs_dir = Path(self.logs_dir)
+        self.replays_dir = Path(self.replays_dir)
+        self.analysis_cache_dir = Path(self.analysis_cache_dir)
+        self.player_data_dir = Path(self.player_data_dir)
 
     def mkdir(self, *args, **kwargs):
         """Mock mkdir method that the app might be calling."""
@@ -39,11 +63,13 @@ class Settings(BaseSettings):
     def ensure_directories(self):
         """Ensure directories exist - call this when needed."""
         try:
-            for dir_name in ["data/replays", "data/cache", "data/players", self.logs_dir]:
-                Path(dir_name).mkdir(parents=True, exist_ok=True)
+            for dir_path in [self.replays_dir, self.analysis_cache_dir, self.player_data_dir, self.logs_dir]:
+                dir_path.mkdir(parents=True, exist_ok=True)
         except PermissionError:
             # Log warning but don't fail startup
             print(f"Warning: Could not create directories. Using /tmp as fallback.")
+        except Exception as e:
+            print(f"Warning: Error creating directories: {e}")
 
 
 # Global settings instance
@@ -54,6 +80,8 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings()
+        # Ensure directories exist on first access
+        _settings.ensure_directories()
     return _settings
 
 def get_ballchasing_token() -> str:
@@ -62,7 +90,7 @@ def get_ballchasing_token() -> str:
 
 def get_cache_dir() -> Path:
     """Get cache directory."""
-    return Path("data/cache")
+    return get_settings().analysis_cache_dir
 
 def is_debug_mode() -> bool:
     """Check debug mode."""
