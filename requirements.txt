@@ -1,5 +1,5 @@
 # Core analysis libraries
-carball>=1.2.0
+carball>=0.7.5
 ballchasing>=0.4.0
 
 # Web framework and server
