@@ -20,6 +20,7 @@ aiohttp>=3.8.0
 # Configuration and environment
 python-decouple>=3.4
 pydantic>=1.8.0
+pydantic-settings>=2.0.0
 
 # CLI interface
 click>=8.0.0
