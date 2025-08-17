@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     port: int = 8000
     log_level: str = "INFO"
     
+    # Additional settings that the app expects
+    enable_cors: bool = True
+    logs_dir: str = "logs"
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
@@ -33,7 +37,7 @@ class Settings(BaseSettings):
     def ensure_directories(self):
         """Ensure directories exist - call this when needed."""
         try:
-            for dir_name in ["data/replays", "data/cache", "data/players"]:
+            for dir_name in ["data/replays", "data/cache", "data/players", self.logs_dir]:
                 Path(dir_name).mkdir(parents=True, exist_ok=True)
         except PermissionError:
             # Log warning but don't fail startup
