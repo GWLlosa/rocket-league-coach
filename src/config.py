@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from typing import List
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,7 @@ class Settings(BaseSettings):
     
     # Additional settings that the app expects
     enable_cors: bool = True
+    cors_origins: List[str] = ["*"]
     logs_dir: str = "logs"
     
     class Config:
@@ -29,9 +31,9 @@ class Settings(BaseSettings):
     def __init__(self, **kwargs):
         """Initialize settings."""
         super().__init__(**kwargs)
-        
-        # Don't try to create directories here - they should exist from Dockerfile
-        # If they don't exist, we'll create them when needed
+
+    def mkdir(self, *args, **kwargs):
+        """Mock mkdir method that the app might be calling."""
         pass
 
     def ensure_directories(self):
