@@ -1,39 +1,43 @@
-# Multi-stage Docker build for Rocket League Coach
-FROM python:3.9-slim as base
+# Use Python 3.9 slim image for better compatibility
+FROM python:3.9-slim
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies required for carball and analysis
+# Set work directory
+WORKDIR /app
+
+# Install system dependencies needed for numpy/scipy/carball
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    make \
+    gfortran \
+    libblas-dev \
+    liblapack-dev \
+    libatlas-base-dev \
+    pkg-config \
     curl \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
+# Create non-root user
 RUN useradd --create-home --shell /bin/bash app
 
-# Set working directory
-WORKDIR /app
-
-# Copy requirements first for better layer caching
+# Copy requirements first for better Docker layer caching
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Use --prefer-binary to avoid compiling from source when possible
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --prefer-binary --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p logs replays analysis_cache player_data && \
+RUN mkdir -p data/replays data/cache data/players && \
     chown -R app:app /app
 
 # Switch to non-root user
@@ -43,17 +47,8 @@ USER app
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Default command
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-# Production stage
-FROM base as production
-
-# Additional production optimizations
-ENV ENVIRONMENT=production
-
-# Use gunicorn for production
-CMD ["gunicorn", "src.main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+# Run the application
+CMD ["python", "-m", "src.main"]
