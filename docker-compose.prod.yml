@@ -5,28 +5,34 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: rocket-league-coach
+    volumes:
+      - rl-data:/app/data
+      - rl-logs:/app/logs
     ports:
       - "8000:8000"
-    volumes:
-      - ./data/replays:/app/data/replays
-      - ./data/cache:/app/data/cache  
-      - ./data/players:/app/data/players
-    environment:
-      - ENVIRONMENT=production
-      - LOG_LEVEL=INFO
-      - BALLCHASING_API_TOKEN=${BALLCHASING_API_TOKEN}
     env_file:
       - .env
-    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - PYTHONUNBUFFERED=1
+    restart: always
     networks:
       - rl-coach-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 3s
       retries: 3
       start_period: 40s
 
 networks:
   rl-coach-network:
     driver: bridge
+
+volumes:
+  rl-data:
+    driver: local
+  rl-logs:
+    driver: local
