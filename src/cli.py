@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+import logging
 
 import click
 from rich.console import Console
@@ -17,14 +18,11 @@ from rich.text import Text
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import get_settings
-from logging_config import setup_logging, get_logger
-from services.analysis_service import get_analysis_service
-from data.models import AnalysisRequest, AnalysisStatus
-from data.cache_manager import get_cache_manager
+# Use standard logging instead of custom logging_config to avoid import issues
+logger = logging.getLogger(__name__)
 
 # Initialize rich console
 console = Console()
-logger = get_logger(__name__)
 
 
 @click.group()
@@ -32,12 +30,11 @@ logger = get_logger(__name__)
 @click.option('--config-file', type=click.Path(), help='Path to configuration file')
 def cli(debug: bool, config_file: Optional[str]):
     """Rocket League Coach - Automated coaching system with win/loss correlation analysis."""
-    # Setup logging
+    # Setup basic logging
     if debug:
-        import os
-        os.environ['LOG_LEVEL'] = 'DEBUG'
-    
-    setup_logging()
+        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
     if config_file:
         console.print(f"[yellow]Using config file: {config_file}[/yellow]")
@@ -62,22 +59,31 @@ def analyze(gamertag: str, games: int, force_refresh: bool, raw_data: bool, outp
     console.print(f"Games to analyze: {games}")
     console.print(f"Force refresh: {'Yes' if force_refresh else 'No'}")
     
-    # Create analysis request
-    request = AnalysisRequest(
-        gamertag=gamertag,
-        num_games=games,
-        force_refresh=force_refresh,
-        include_raw_data=raw_data
-    )
-    
-    # Run analysis with progress tracking
-    result = asyncio.run(_run_analysis_with_progress(request))
-    
-    if result:
-        _display_analysis_result(result)
+    try:
+        from services.analysis_service import get_analysis_service
+        from data.models import AnalysisRequest
         
-        if output:
-            _save_result_to_file(result, output)
+        # Create analysis request
+        request = AnalysisRequest(
+            gamertag=gamertag,
+            num_games=games,
+            force_refresh=force_refresh,
+            include_raw_data=raw_data
+        )
+        
+        # Run analysis with progress tracking
+        result = asyncio.run(_run_analysis_with_progress(request))
+        
+        if result:
+            _display_analysis_result(result)
+            
+            if output:
+                _save_result_to_file(result, output)
+    except ImportError as e:
+        console.print(f"[red]Error: Required modules not available. {str(e)}[/red]")
+        console.print("[yellow]Note: Full analysis features may not be implemented yet.[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Analysis failed: {str(e)}[/red]")
 
 
 @cli.command()
@@ -88,35 +94,41 @@ def history(gamertag: str, limit: int):
     
     console.print(f"[bold]Game history for: [cyan]{gamertag}[/cyan][/bold]")
     
-    cache_manager = get_cache_manager()
-    history_data = cache_manager.get_player_game_history(gamertag, limit=limit)
-    
-    if not history_data:
-        console.print(f"[yellow]No game history found for {gamertag}[/yellow]")
-        return
-    
-    # Create table
-    table = Table(title=f"{gamertag}'s Recent Games")
-    table.add_column("Date", style="cyan")
-    table.add_column("Result", style="bold")
-    table.add_column("Rank Tier", style="magenta")
-    table.add_column("Replay ID", style="dim")
-    
-    for game in history_data:
-        result_style = "green" if game['game_result'] == 'win' else "red"
-        result_text = f"[{result_style}]{game['game_result'].upper()}[/{result_style}]"
+    try:
+        from data.cache_manager import get_cache_manager
+        cache_manager = get_cache_manager()
+        history_data = cache_manager.get_player_game_history(gamertag, limit=limit)
         
-        rank_tier = str(game.get('rank_tier', 'Unknown'))
-        game_date = game['game_date'][:10] if game['game_date'] else 'Unknown'
+        if not history_data:
+            console.print(f"[yellow]No game history found for {gamertag}[/yellow]")
+            return
         
-        table.add_row(
-            game_date,
-            result_text,
-            rank_tier,
-            game['replay_id'][:8] + "..."
-        )
-    
-    console.print(table)
+        # Create table
+        table = Table(title=f"{gamertag}'s Recent Games")
+        table.add_column("Date", style="cyan")
+        table.add_column("Result", style="bold")
+        table.add_column("Rank Tier", style="magenta")
+        table.add_column("Replay ID", style="dim")
+        
+        for game in history_data:
+            result_style = "green" if game['game_result'] == 'win' else "red"
+            result_text = f"[{result_style}]{game['game_result'].upper()}[/{result_style}]"
+            
+            rank_tier = str(game.get('rank_tier', 'Unknown'))
+            game_date = game['game_date'][:10] if game['game_date'] else 'Unknown'
+            
+            table.add_row(
+                game_date,
+                result_text,
+                rank_tier,
+                game['replay_id'][:8] + "..."
+            )
+        
+        console.print(table)
+    except ImportError as e:
+        console.print(f"[red]Error: Cache manager not available. {str(e)}[/red]")
+    except Exception as e:
+        console.print(f"[red]Failed to retrieve history: {str(e)}[/red]")
 
 
 @cli.command()
@@ -125,34 +137,40 @@ def cache_stats():
     
     console.print("[bold]Cache Statistics[/bold]")
     
-    cache_manager = get_cache_manager()
-    stats = cache_manager.get_cache_stats()
-    
-    # Create stats table
-    table = Table(title="Cache Health")
-    table.add_column("Component", style="cyan")
-    table.add_column("Entries", justify="right", style="yellow")
-    table.add_column("Size", justify="right", style="green")
-    
-    # Replay cache
-    replay_stats = stats['replay_cache']
-    replay_size = _format_file_size(replay_stats['directory_size'])
-    table.add_row("Replay Cache", str(replay_stats['entries']), replay_size)
-    
-    # Analysis cache
-    analysis_stats = stats['analysis_cache']
-    analysis_size = _format_file_size(analysis_stats['directory_size'])
-    table.add_row("Analysis Cache", str(analysis_stats['entries']), analysis_size)
-    
-    # Player history
-    player_stats = stats['player_history']
-    table.add_row("Player History", str(player_stats['unique_players']), "N/A")
-    
-    # Total
-    total_size = _format_file_size(stats['total_cache_size'])
-    table.add_row("[bold]Total", "", f"[bold]{total_size}")
-    
-    console.print(table)
+    try:
+        from data.cache_manager import get_cache_manager
+        cache_manager = get_cache_manager()
+        stats = cache_manager.get_cache_stats()
+        
+        # Create stats table
+        table = Table(title="Cache Health")
+        table.add_column("Component", style="cyan")
+        table.add_column("Entries", justify="right", style="yellow")
+        table.add_column("Size", justify="right", style="green")
+        
+        # Replay cache
+        replay_stats = stats['replay_cache']
+        replay_size = _format_file_size(replay_stats['directory_size'])
+        table.add_row("Replay Cache", str(replay_stats['entries']), replay_size)
+        
+        # Analysis cache
+        analysis_stats = stats['analysis_cache']
+        analysis_size = _format_file_size(analysis_stats['directory_size'])
+        table.add_row("Analysis Cache", str(analysis_stats['entries']), analysis_size)
+        
+        # Player history
+        player_stats = stats['player_history']
+        table.add_row("Player History", str(player_stats['unique_players']), "N/A")
+        
+        # Total
+        total_size = _format_file_size(stats['total_cache_size'])
+        table.add_row("[bold]Total", "", f"[bold]{total_size}")
+        
+        console.print(table)
+    except ImportError as e:
+        console.print(f"[red]Error: Cache system not available. {str(e)}[/red]")
+    except Exception as e:
+        console.print(f"[red]Failed to retrieve cache stats: {str(e)}[/red]")
 
 
 @cli.command()
@@ -160,12 +178,16 @@ def cache_stats():
 def cache_clear():
     """Clear all cached data. WARNING: This will delete all cached replays and analysis results."""
     
-    cache_manager = get_cache_manager()
-    
-    with console.status("[bold yellow]Clearing cache..."):
-        cache_manager.clear_cache(confirm=True)
-    
-    console.print("[bold green]✅ Cache cleared successfully[/bold green]")
+    try:
+        from data.cache_manager import get_cache_manager
+        cache_manager = get_cache_manager()
+        
+        with console.status("[bold yellow]Clearing cache..."):
+            cache_manager.clear_cache(confirm=True)
+        
+        console.print("[bold green]✅ Cache cleared successfully[/bold green]")
+    except Exception as e:
+        console.print(f"[red]Failed to clear cache: {str(e)}[/red]")
 
 
 @cli.command()
@@ -174,22 +196,26 @@ def cache_cleanup():
     
     console.print("[bold]Cleaning up expired cache entries...[/bold]")
     
-    cache_manager = get_cache_manager()
-    
-    with console.status("[bold yellow]Running cleanup..."):
-        stats = cache_manager.cleanup_expired_cache()
-    
-    console.print(f"[green]✅ Cleanup completed![/green]")
-    console.print(f"Removed {stats['replays_removed']} expired replays")
-    console.print(f"Removed {stats['analysis_removed']} expired analysis results")
-    console.print(f"Removed {stats['files_removed']} files total")
+    try:
+        from data.cache_manager import get_cache_manager
+        cache_manager = get_cache_manager()
+        
+        with console.status("[bold yellow]Running cleanup..."):
+            stats = cache_manager.cleanup_expired_cache()
+        
+        console.print(f"[green]✅ Cleanup completed![/green]")
+        console.print(f"Removed {stats['replays_removed']} expired replays")
+        console.print(f"Removed {stats['analysis_removed']} expired analysis results")
+        console.print(f"Removed {stats['files_removed']} files total")
+    except Exception as e:
+        console.print(f"[red]Cleanup failed: {str(e)}[/red]")
 
 
 @cli.command()
 def health():
     """Check application health and component status."""
     
-    console.print("[bold]System Health Check[/bold]")
+    console.print("[bold]System Health Check[/bold]\n")
     
     settings = get_settings()
     
@@ -197,11 +223,18 @@ def health():
     config_status = "✅ OK" if settings.ballchasing_api_token else "❌ Missing API token"
     console.print(f"Configuration: {config_status}")
     
+    if settings.ballchasing_api_token:
+        token_preview = settings.ballchasing_api_token[:10] + "..." if len(settings.ballchasing_api_token) > 10 else "SET"
+        console.print(f"  API Token: {token_preview}")
+    
     # Check cache system
     try:
+        from data.cache_manager import get_cache_manager
         cache_manager = get_cache_manager()
         cache_stats = cache_manager.get_cache_stats()
         cache_status = "✅ OK"
+    except ImportError:
+        cache_status = "⚠️  Module not implemented"
     except Exception as e:
         cache_status = f"❌ Error: {str(e)}"
     
@@ -209,8 +242,11 @@ def health():
     
     # Check analysis service
     try:
+        from services.analysis_service import get_analysis_service
         analysis_service = get_analysis_service()
         analysis_status = "✅ OK"
+    except ImportError:
+        analysis_status = "⚠️  Module not implemented"
     except Exception as e:
         analysis_status = f"❌ Error: {str(e)}"
     
@@ -221,53 +257,80 @@ def health():
     console.print(f"Replays: {settings.replays_dir}")
     console.print(f"Cache: {settings.analysis_cache_dir}")
     console.print(f"Player Data: {settings.player_data_dir}")
+    console.print(f"Logs: {settings.logs_dir}")
+    
+    # Test API endpoint
+    console.print(f"\n[bold]API Status:[/bold]")
+    try:
+        import requests
+        response = requests.get("http://localhost:8000/health", timeout=2)
+        if response.status_code == 200:
+            console.print(f"Health Endpoint: ✅ OK (Status {response.status_code})")
+            data = response.json()
+            console.print(f"  Service: {data.get('service', 'Unknown')}")
+            console.print(f"  Version: {data.get('version', 'Unknown')}")
+        else:
+            console.print(f"Health Endpoint: ⚠️  Status {response.status_code}")
+    except Exception as e:
+        console.print(f"Health Endpoint: ❌ Cannot connect to API")
+    
+    console.print(f"\n[bold]Environment:[/bold]")
+    console.print(f"Environment: {settings.environment}")
+    console.print(f"Debug Mode: {settings.debug}")
+    console.print(f"Host: {settings.host}:{settings.port}")
 
 
-async def _run_analysis_with_progress(request: AnalysisRequest):
+async def _run_analysis_with_progress(request):
     """Run analysis with progress tracking."""
     
-    analysis_service = get_analysis_service()
-    
-    # Progress tracking variables
-    current_status = None
-    
-    def progress_callback(status: AnalysisStatus):
-        nonlocal current_status
-        current_status = status
-    
-    # Start analysis in background
-    analysis_task = asyncio.create_task(
-        analysis_service.analyze_player(request, progress_callback)
-    )
-    
-    # Show progress
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        
-        task = progress.add_task("Starting analysis...", total=100)
-        
-        while not analysis_task.done():
-            if current_status:
-                progress.update(
-                    task,
-                    completed=current_status.progress,
-                    description=current_status.current_step
-                )
-            
-            await asyncio.sleep(0.1)
-        
-        # Complete the progress bar
-        progress.update(task, completed=100, description="Analysis complete")
-    
     try:
+        from services.analysis_service import get_analysis_service
+        from data.models import AnalysisStatus
+        
+        analysis_service = get_analysis_service()
+        
+        # Progress tracking variables
+        current_status = None
+        
+        def progress_callback(status: AnalysisStatus):
+            nonlocal current_status
+            current_status = status
+        
+        # Start analysis in background
+        analysis_task = asyncio.create_task(
+            analysis_service.analyze_player(request, progress_callback)
+        )
+        
+        # Show progress
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            
+            task = progress.add_task("Starting analysis...", total=100)
+            
+            while not analysis_task.done():
+                if current_status:
+                    progress.update(
+                        task,
+                        completed=current_status.progress,
+                        description=current_status.current_step
+                    )
+                
+                await asyncio.sleep(0.1)
+            
+            # Complete the progress bar
+            progress.update(task, completed=100, description="Analysis complete")
+        
         result = await analysis_task
         return result
+    except ImportError as e:
+        console.print(f"[yellow]Analysis service not fully implemented: {str(e)}[/yellow]")
+        return None
     except Exception as e:
         console.print(f"[red]Analysis failed: {str(e)}[/red]")
         return None
@@ -320,64 +383,6 @@ def _display_analysis_result(result):
         for area in result.improvement_areas:
             console.print(f"  🎯 {area}")
         console.print()
-    
-    # Performance Trend
-    if result.recent_performance_trend:
-        trend_emoji = {
-            "improving": "📈",
-            "declining": "📉",
-            "stable": "➡️"
-        }
-        trend_color = {
-            "improving": "green",
-            "declining": "red",
-            "stable": "yellow"
-        }
-        emoji = trend_emoji.get(result.recent_performance_trend, "❓")
-        color = trend_color.get(result.recent_performance_trend, "white")
-        
-        console.print(f"[bold]Recent Trend:[/bold] [{color}]{emoji} {result.recent_performance_trend.title()}[/{color}]")
-    
-    # Detailed Insights Tables
-    if result.correlation_insights:
-        console.print("\n[bold]🔗 Win/Loss Correlation Insights:[/bold]")
-        correlation_table = Table()
-        correlation_table.add_column("Metric", style="cyan")
-        correlation_table.add_column("Your Winning Pattern", style="green")
-        correlation_table.add_column("Confidence", style="yellow")
-        correlation_table.add_column("Improvement Potential", style="magenta")
-        
-        for insight in result.correlation_insights[:5]:
-            confidence = "High" if insight.statistical_result and insight.statistical_result.confidence_level == "high" else "Medium"
-            potential = f"{insight.improvement_potential:.0f}%" if insight.improvement_potential else "N/A"
-            
-            correlation_table.add_row(
-                insight.metric_name.replace('_', ' ').title(),
-                insight.message[:50] + "..." if len(insight.message) > 50 else insight.message,
-                confidence,
-                potential
-            )
-        
-        console.print(correlation_table)
-    
-    # Rule-based insights
-    if result.rule_based_insights:
-        console.print("\n[bold]📊 Benchmark Analysis:[/bold]")
-        benchmark_table = Table()
-        benchmark_table.add_column("Area", style="cyan")
-        benchmark_table.add_column("Recommendation", style="yellow")
-        benchmark_table.add_column("Priority", style="red")
-        
-        for insight in result.rule_based_insights[:5]:
-            priority_text = "High" if insight.priority <= 2 else "Medium" if insight.priority <= 3 else "Low"
-            
-            benchmark_table.add_row(
-                insight.metric_name.replace('_', ' ').title(),
-                insight.message[:60] + "..." if len(insight.message) > 60 else insight.message,
-                priority_text
-            )
-        
-        console.print(benchmark_table)
 
 
 def _save_result_to_file(result, output_path: str):
@@ -423,26 +428,35 @@ def quick(gamertag: str):
     
     console.print(f"[bold]Quick analysis for: [cyan]{gamertag}[/cyan][/bold]")
     
-    request = AnalysisRequest(
-        gamertag=gamertag,
-        num_games=10,
-        force_refresh=False,
-        include_raw_data=False
-    )
-    
-    result = asyncio.run(_run_analysis_with_progress(request))
-    
-    if result:
-        # Show condensed results
-        console.print(f"\n[bold]📊 Quick Summary for {gamertag}[/bold]")
-        console.print(f"Win Rate: {result.win_rate:.1f}% ({result.wins}W-{result.losses}L)")
-        console.print(f"Confidence: {result.confidence_score:.1%}")
+    try:
+        from services.analysis_service import get_analysis_service
+        from data.models import AnalysisRequest
         
-        if result.top_priority_insights:
-            console.print(f"\n[bold]🎯 Top Recommendation:[/bold]")
-            top_insight = result.top_priority_insights[0]
-            console.print(f"   {top_insight.title}")
-            console.print(f"   {top_insight.message}")
+        request = AnalysisRequest(
+            gamertag=gamertag,
+            num_games=10,
+            force_refresh=False,
+            include_raw_data=False
+        )
+        
+        result = asyncio.run(_run_analysis_with_progress(request))
+        
+        if result:
+            # Show condensed results
+            console.print(f"\n[bold]📊 Quick Summary for {gamertag}[/bold]")
+            console.print(f"Win Rate: {result.win_rate:.1f}% ({result.wins}W-{result.losses}L)")
+            console.print(f"Confidence: {result.confidence_score:.1%}")
+            
+            if result.top_priority_insights:
+                console.print(f"\n[bold]🎯 Top Recommendation:[/bold]")
+                top_insight = result.top_priority_insights[0]
+                console.print(f"   {top_insight.title}")
+                console.print(f"   {top_insight.message}")
+    except ImportError as e:
+        console.print(f"[yellow]Quick analysis not available - required modules not implemented: {str(e)}[/yellow]")
+        console.print("[blue]Tip: The health command can show you what components are available.[/blue]")
+    except Exception as e:
+        console.print(f"[red]Quick analysis failed: {str(e)}[/red]")
 
 
 if __name__ == '__main__':
