@@ -1,6 +1,6 @@
 # Core analysis libraries
 carball>=0.7.5
-ballchasing>=0.4.0
+python-ballchasing>=0.4.1
 
 # Web framework and server
 fastapi>=0.68.0
