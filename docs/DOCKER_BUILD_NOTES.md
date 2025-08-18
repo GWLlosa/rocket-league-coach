@@ -24,6 +24,21 @@ debconf: falling back to frontend: Teletype
 - It automatically falls back to non-interactive mode
 - The packages install successfully despite these warnings
 
+### pip Root User Warnings
+
+You will see warnings in red text like:
+
+```
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager. 
+It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv
+```
+
+**This is normal in Docker builds and can be ignored.** Here's why:
+- During the build phase, we must run as root to install system packages
+- The Dockerfile switches to a non-root user (`app`) after installation
+- Docker containers are isolated environments, so the typical concerns about running pip as root don't apply
+- This is standard practice for Docker container builds
+
 ### Carball Import Warning
 
 When importing carball, you might see:
@@ -86,6 +101,18 @@ Expected output:
 }
 ```
 
+## Summary of Harmless Red Text
+
+During the build, you can safely ignore these red/warning messages:
+1. `debconf: unable to initialize frontend` - Normal for non-interactive builds
+2. `WARNING: Running pip as the 'root' user` - Normal for Docker builds
+3. `Not importing functions due to missing packages: No module named 'boxcars_py'` - Optional dependency
+
+The build is only failing if you see:
+- `ERROR:` messages
+- `returned a non-zero code`
+- The build stops and exits
+
 ## Troubleshooting Build Issues
 
 ### Clean Rebuild
@@ -143,3 +170,11 @@ The Dockerfile installs dependencies in a specific order to avoid conflicts:
 6. Carball - installed with --no-deps to avoid version conflicts
 
 This order is critical for successful builds.
+
+## Why We Use Root During Build
+
+The Dockerfile follows Docker best practices:
+1. **Build phase** (as root): Install system packages and Python dependencies
+2. **Runtime phase** (as non-root user `app`): Run the application
+
+This is why pip warnings about running as root are expected and safe during the build phase.
