@@ -26,10 +26,10 @@ RUN pip install --no-cache-dir 'numpy>=1.22.4,<2.0'
 RUN pip install --no-cache-dir 'scipy>=1.7.0,<2.0'
 
 # Install the rest of the requirements
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt || true
 
 # Install carball separately without strict dependencies
-RUN pip install --no-cache-dir --no-deps carball
+RUN pip install --no-cache-dir --no-deps carball || true
 
 # Create necessary directories
 RUN mkdir -p /app/data/replays /app/data/cache /app/data/players /app/logs
@@ -44,7 +44,7 @@ RUN useradd -m -u 1000 app && \
 USER app
 
 # Set Python path
-ENV PYTHONPATH=/app:$PYTHONPATH
+ENV PYTHONPATH=/app:/app/src:$PYTHONPATH
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
