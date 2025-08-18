@@ -44,7 +44,7 @@ Statistical Engine → Coaching Logic → Rich CLI/Web Interface
 - Ubuntu 20.04+ (or similar Linux distribution)
 - Docker and Docker Compose
 - Git
-- Ballchasing.com API token
+- Ballchasing.com API token (get one at https://ballchasing.com/)
 
 ### 1. Clone and Setup
 ```bash
@@ -69,94 +69,112 @@ HOST=0.0.0.0
 PORT=8000
 LOG_LEVEL=INFO
 
-# Cache Settings
+# CORS Settings (default is fine)
+ENABLE_CORS=true
+CORS_ORIGINS=*
+
+# Cache Settings (optional)
 CACHE_TTL_HOURS=24
 MAX_CACHE_SIZE_GB=5
 ```
 
-### 3. Deploy with One Command
+### 3. Deploy with Docker
 ```bash
-# Make deployment script executable and run
-chmod +x scripts/redeploy.sh
-./scripts/redeploy.sh
+# Build and start the application
+docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
-The script will:
-- Pull latest changes
-- Build Docker containers
-- Start the application
-- Run comprehensive health checks
-- Show you exactly how to test and use the system
+**Note:** During the Docker build, you may see red warning messages like:
+```
+debconf: unable to initialize frontend: Dialog
+debconf: falling back to frontend: Readline
+```
+These are **harmless warnings** about terminal interaction during package installation and can be safely ignored. They do not affect the application functionality.
 
 ### 4. Test Your Deployment
 ```bash
 # Check system health
 curl http://localhost:8000/health
 
-# Test CLI interface
-docker-compose -f docker-compose.prod.yml exec rocket-league-coach python -m src.cli health
+# Test dependencies are installed
+docker-compose -f docker-compose.prod.yml exec rocket-league-coach bash /app/scripts/test-dependencies.sh
 
-# Analyze a player (replace with real gamertag)
-docker-compose -f docker-compose.prod.yml exec rocket-league-coach python -m src.cli quick YourGamertag
+# Enter the container for CLI access
+docker-compose -f docker-compose.prod.yml exec rocket-league-coach bash
+
+# Inside container, test CLI
+python -m src.cli health
 ```
 
 ## 📱 Usage Examples
 
-### CLI Interface Commands
+### Basic Player Analysis
 
-```bash
-# Quick analysis (recommended for first try)
-python -m src.cli quick GWLlosa
+While the full CLI integration is being completed, you can use the analysis scripts directly:
 
-# Full analysis with custom settings
-python -m src.cli analyze GWLlosa --games 15 --force-refresh
-
-# View player's cached game history
-python -m src.cli history GWLlosa --limit 20
-
-# Check cache statistics and health
-python -m src.cli cache-stats
-
-# System health check
-python -m src.cli health
-
-# Clean up expired cache
-python -m src.cli cache-cleanup
-```
-
-### Inside Docker Container
 ```bash
 # Enter the container
 docker-compose -f docker-compose.prod.yml exec rocket-league-coach bash
 
-# Run any CLI command
+# Run analysis for a player (replace with actual gamertag)
+python << 'EOF'
+import sys
+sys.path.extend(['/app', '/app/src'])
+from config import get_settings
+import requests
+from rich.console import Console
+from rich.table import Table
+
+console = Console()
+settings = get_settings()
+
+def analyze_player(player_name, num_games=10):
+    headers = {'Authorization': settings.ballchasing_api_token}
+    url = 'https://ballchasing.com/api/replays'
+    params = {'player-name': player_name, 'count': num_games, 'sort-by': 'created', 'sort-dir': 'desc'}
+    
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        replays = data.get('list', [])
+        
+        if replays:
+            console.print(f"[bold cyan]Found {len(replays)} replays for {player_name}[/bold cyan]")
+            # Process replays here
+        else:
+            console.print(f"[yellow]No replays found for {player_name}[/yellow]")
+    else:
+        console.print(f"[red]API Error: {response.status_code}[/red]")
+
+# Run analysis
+player = input("Enter player name: ")
+analyze_player(player)
+EOF
+```
+
+### CLI Commands (when fully implemented)
+
+```bash
+# Quick analysis (recommended for first try)
 python -m src.cli quick YourGamertag
+
+# Full analysis with custom settings
+python -m src.cli analyze YourGamertag --games 15 --force-refresh
+
+# View cached game history
+python -m src.cli history YourGamertag --limit 20
+
+# Check cache statistics
+python -m src.cli cache-stats
+
+# System health check
+python -m src.cli health
 ```
 
 ## 🔄 Deployment & Updates
 
-### Redeploy Scripts
+### Updating the Application
 
-We provide two deployment scripts for easy updates:
-
-#### **Full Redeploy** (Recommended)
-```bash
-./scripts/redeploy.sh
-```
-- Pulls latest changes from GitHub
-- Comprehensive cleanup and rebuild
-- Full health checks and testing
-- Detailed status reporting and troubleshooting
-
-#### **Quick Redeploy** (Fast Updates)
-```bash
-./scripts/quick-redeploy.sh
-```
-- Fast pull and rebuild
-- Basic health check
-- Perfect for rapid iteration
-
-### Manual Deployment
 ```bash
 # Pull latest changes
 git pull origin main
@@ -167,195 +185,89 @@ docker-compose -f docker-compose.prod.yml up -d --build
 
 # Check status
 docker-compose -f docker-compose.prod.yml ps
-curl http://localhost:8000/health
+docker-compose -f docker-compose.prod.yml logs -f
 ```
 
-## 📊 Example Output
+## 📊 Current Implementation Status
 
-### CLI Analysis Results
-```
-🎯 Player Analysis Results for GWLlosa
-Games Analyzed: 10 | Win Rate: 60.0% | Confidence: 85%
+### ✅ Working Components
+- Docker container with all dependencies
+- FastAPI server with health checks
+- Ballchasing.com API integration
+- Basic player data fetching
+- Configuration management
+- Logging system
 
-🔥 Top Priority Improvements:
-  1. Boost Management Consistency
-     In your wins, you maintain 52 boost on average, but in losses only 34.
-     💡 Actions: Collect small boost pads, avoid overfill waste
+### 🚧 In Development
+- Full CLI command integration
+- Carball replay processing pipeline
+- Statistical analysis engine
+- Win/loss correlation analysis
+- Coaching insight generation
+- Cache management system
 
-💪 Key Strengths:
-  ✅ Strong win rate of 60.0%
-  ✅ Excellent shooting accuracy
-  ✅ Good defensive positioning
-
-📈 Primary Improvement Areas:
-  🎯 Boost management and efficiency
-  🎯 Speed and mechanical execution
-
-Recent Trend: 📈 Improving
-```
-
-### Analysis Metrics
-The system analyzes 12 core performance metrics across 3 tiers:
-
-**Tier 1 (High-Confidence Causal)**
-- Average Speed, Supersonic Time, Shooting %, Boost Management
-
-**Tier 2 (Medium-Confidence Tactical)**  
-- Ball Distance, Rotation, Boost Efficiency, Saves
-
-**Tier 3 (Advanced Correlation)**
-- Defensive Time, Assists
+### 📋 Known Issues
+- Some CLI commands show import errors (being fixed)
+- Full analysis pipeline not yet connected
+- Web UI not yet implemented
 
 ## 🏭 Production Features
 
 ### Health Monitoring
 - **Health Endpoint**: `GET /health` - Application status
-- **Cache Statistics**: Monitor cache performance and storage
-- **System Diagnostics**: Memory, disk, and component health
+- **Container Health Checks**: Automatic restart on failure
+- **Logging**: Comprehensive application logs in `/app/logs`
 
-### Caching System
-- **Replay Caching**: Automatic replay file caching with TTL
-- **Analysis Results**: Cache expensive analysis for 24 hours
-- **Player History**: Track game outcomes and trends
-- **Automatic Cleanup**: Remove expired cache entries
-
-### Error Handling
-- **Graceful Degradation**: Continue analysis even if some replays fail
-- **Rate Limit Respect**: Automatic rate limiting for Ballchasing API
-- **Retry Logic**: Exponential backoff for transient failures
+### Dependencies Included
+- **Core**: FastAPI, Uvicorn, Pydantic
+- **Data Processing**: NumPy, Pandas, SciPy
+- **Rocket League**: Carball (replay analysis)
+- **API**: Requests, aiohttp, aiofiles
+- **CLI**: Click, Rich
+- **Database**: SQLAlchemy
 
 ## 🔧 Development
 
 ### Local Development Setup
 ```bash
-# Create virtual environment
-python3 -m venv rocket-league-env
-source rocket-league-env/bin/activate
+# Use development docker-compose
+docker-compose up -d
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy environment file
-cp .env.example .env
-# Edit .env with your settings
-
-# Run locally
-python -m src.main
+# This mounts source code for live reloading
 ```
 
-### Development Commands
+### Running Tests
 ```bash
-# Run tests
-pytest tests/
-
-# Code formatting
-black src/ tests/
-isort src/ tests/
-
-# Type checking
-mypy src/
-
-# Build Docker image
-docker build -t rocket-league-coach .
+# Inside container
+python -m pytest tests/
 ```
 
 ### Project Structure
 ```
 rocket-league-coach/
 ├── src/                          # Main application code
-│   ├── main.py                   # FastAPI application entry
-│   ├── cli.py                    # Rich CLI interface
-│   ├── config.py                 # Configuration management
-│   ├── api/                      # Ballchasing API integration
-│   │   ├── ballchasing_client.py # API client with rate limiting
-│   │   ├── models.py             # API data models
-│   │   └── exceptions.py         # API-specific exceptions
+│   ├── main.py                   # FastAPI application
+│   ├── cli.py                    # CLI interface
+│   ├── config.py                 # Configuration
+│   ├── api/                      # Ballchasing API client
 │   ├── analysis/                 # Analysis engines
-│   │   ├── replay_processor.py   # Carball integration
-│   │   ├── metrics_extractor.py  # Performance metrics
-│   │   ├── statistical_analyzer.py # Win/loss correlations
-│   │   ├── coach.py              # Coaching insights
-│   │   └── benchmarks.py         # Rank benchmarks
-│   ├── data/                     # Data management
-│   │   ├── cache_manager.py      # Caching system
-│   │   └── models.py             # Data structures
-│   └── services/                 # Main services
-│       └── analysis_service.py   # Complete workflow orchestration
+│   ├── data/                     # Data models
+│   └── services/                 # Business logic
 ├── tests/                        # Test suite
-├── scripts/                      # Deployment scripts
-│   ├── redeploy.sh              # Full redeploy with testing
-│   └── quick-redeploy.sh        # Fast redeploy
-├── deploy/                       # Production deployment
-├── docker-compose.prod.yml       # Production Docker Compose
+├── scripts/                      # Utility scripts
+├── docker-compose.yml            # Development compose
+├── docker-compose.prod.yml       # Production compose
 ├── Dockerfile                    # Container definition
 └── requirements.txt              # Python dependencies
 ```
 
-## 🎯 Key Innovation
+## 🎯 Roadmap
 
-### Personalized Correlation Analysis
-Instead of generic advice like "improve boost management," the system provides **personalized insights**:
-
-> "In your wins, you maintain 55 boost on average, but in losses only 35. Your winning games show significantly better boost discipline - focus on maintaining that 50+ boost level."
-
-This approach identifies **your specific winning patterns** rather than applying generic advice.
-
-## 📋 System Requirements
-
-### Minimum Requirements
-- **RAM**: 4GB (carball analysis is memory-intensive)
-- **Storage**: 10GB (for replay caching)
-- **CPU**: 2 cores
-- **Network**: Stable internet for Ballchasing API
-
-### Recommended Requirements
-- **RAM**: 8GB or more
-- **Storage**: 50GB (for extensive caching)
-- **CPU**: 4 cores or more
-
-## 🔍 Troubleshooting
-
-### Common Issues
-
-**Docker Build Fails**
-```bash
-# Clean Docker cache
-docker system prune -f
-./scripts/redeploy.sh
-```
-
-**Memory Issues**
-```bash
-# Check available memory
-free -h
-# Increase Docker memory limit
-```
-
-**API Token Issues**
-```bash
-# Verify your token in .env
-cat .env | grep BALLCHASING_API_TOKEN
-# Get token from https://ballchasing.com/
-```
-
-**Port Already in Use**
-```bash
-# Check what's using port 8000
-netstat -tlnp | grep 8000
-# Change PORT in .env file
-```
-
-### Logs and Debugging
-```bash
-# View application logs
-docker-compose -f docker-compose.prod.yml logs -f
-
-# View specific service logs
-docker-compose -f docker-compose.prod.yml logs rocket-league-coach
-
-# Enter container for debugging
-docker-compose -f docker-compose.prod.yml exec rocket-league-coach bash
-```
+1. **Phase 1** (Current): Basic infrastructure and API integration
+2. **Phase 2**: Complete CLI implementation and replay processing
+3. **Phase 3**: Statistical analysis and coaching insights
+4. **Phase 4**: Web UI and advanced visualizations
+5. **Phase 5**: Machine learning predictions and trends
 
 ## 🤝 Contributing
 
@@ -381,10 +293,43 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Issues**: Open an issue on GitHub
 - **Documentation**: Check this README and code comments
-- **Health Check**: Use `./scripts/redeploy.sh` for comprehensive system testing
+- **Docker Issues**: See the Docker troubleshooting section below
+
+## 🐳 Docker Troubleshooting
+
+### Common Issues
+
+**Red text during build (debconf warnings)**
+- These are harmless warnings about terminal interaction
+- The build will complete successfully despite these messages
+
+**Container won't start**
+```bash
+# Check logs
+docker-compose -f docker-compose.prod.yml logs
+
+# Rebuild from scratch
+docker-compose -f docker-compose.prod.yml down
+docker system prune -f
+docker-compose -f docker-compose.prod.yml build --no-cache
+```
+
+**Permission errors**
+```bash
+# The container runs as non-root user 'app'
+# Ensure proper permissions on mounted volumes
+sudo chown -R 1000:1000 ./data ./logs
+```
+
+**Memory issues**
+```bash
+# Carball can be memory intensive
+# Ensure Docker has enough memory (4GB+ recommended)
+docker system info | grep Memory
+```
 
 ---
 
 **Ready to improve your Rocket League game?** 🚀
 
-Get started with: `./scripts/redeploy.sh`
+Get started with: `docker-compose -f docker-compose.prod.yml up -d --build`
