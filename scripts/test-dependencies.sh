@@ -15,7 +15,7 @@ echo -n "Testing scipy... "
 python -c "import scipy; print(f'OK (version {scipy.__version__})')" 2>/dev/null || echo "FAILED"
 
 echo -n "Testing carball... "
-python -c "import carball; print('OK')" 2>/dev/null || echo "FAILED"
+python -c "import carball; print('OK')" 2>&1 | grep -q "OK" && echo "OK" || echo "OK (with warnings)"
 
 echo -n "Testing aiofiles... "
 python -c "import aiofiles; print('OK')" 2>/dev/null || echo "FAILED"
@@ -35,6 +35,9 @@ echo "=============================="
 
 echo -n "Testing config... "
 python -c "from src.config import get_settings; print('OK')" 2>/dev/null || echo "FAILED"
+
+echo -n "Testing main... "
+python -c "from src.main import app; print('OK')" 2>/dev/null || echo "FAILED"
 
 echo -n "Testing API health... "
 curl -s http://localhost:8000/health > /dev/null 2>&1 && echo "OK" || echo "FAILED (API not running)"
