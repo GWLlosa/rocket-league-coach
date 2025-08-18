@@ -3,19 +3,33 @@ FROM python:3.9-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies required for scipy and numpy
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    gfortran \
+    libopenblas-dev \
+    liblapack-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and install wheel first
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Install numpy first (required for scipy)
+RUN pip install --no-cache-dir 'numpy>=1.22.4,<2.0'
+
+# Install scipy with numpy already present
+RUN pip install --no-cache-dir 'scipy>=1.7.0,<2.0'
+
+# Install the rest of the requirements
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install carball separately without strict dependencies
+RUN pip install --no-cache-dir --no-deps carball
 
 # Create necessary directories
 RUN mkdir -p /app/data/replays /app/data/cache /app/data/players /app/logs
